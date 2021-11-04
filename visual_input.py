@@ -1,8 +1,8 @@
 import argparse
 import datetime
 import deepdish as dd
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 classes = ['Normal sinus', 'Atrial fibrillation', 'Atrial flutter', 'Ventricular bigeminy', 'Ventricular trigeminy', 'Noise']
 
@@ -56,8 +56,8 @@ def test(args):
                 sample = sample[:args.first]
                 break
     for input_size in input_sizes:
-        d = dd.io.load(f'{args.dataset_path}/{dataset}{input_size}.hdf5')[args.lead]
-        l = dd.io.load(f'{args.dataset_path}/{dataset}label{input_size}.hdf5')[args.lead]
+        d = dd.io.load(f'{args.all_input_path}/{dataset}{input_size}.hdf5')[args.lead]
+        l = dd.io.load(f'{args.all_input_path}/{dataset}label{input_size}.hdf5')[args.lead]
         if args.record is not None:
             d = d[dataset_i:dataset_i + 1, :]
             l = l[dataset_i:dataset_i + 1, :]
@@ -78,7 +78,7 @@ def test(args):
             sl_i = np.argmax(sample_label)
             if prev_samp_label is not None and prev_samp_label != sl_i:
                 print('Different label found in input size')
-            label = sl_i
+            prev_samp_label = sl_i
             ax.plot(np.arange(s - input_size // 2, s + input_size // 2),
                     sample_data + offset,
                     label=f'{input_size} (+{offset})')
@@ -92,22 +92,62 @@ def test(args):
         if args.limit is not None and count == args.limit:
             break
 
-def _main(args):
+def run_data(args):
+    import os
+    from tqdm import tqdm
+    import data
+    if args.physhik_path is None: # logic in data.main(), need to figure out where the output files go
+        output_path = args.train_output_dataset_path
+    else:
+        output_path = f'{args.physhik_path}/dataset'
+    data_args = data.parser.parse_args([])
+    for attr in ['working_dataset_path', 'misc_path', 'physhik_path', 'dataset_path', 'train_output_dataset_path', 'cinc_base_path']:
+        setattr(data_args, attr, getattr(args, attr))
+
+    data_args.save_peaks = True
+    data_args.no_save = True
+    data_args.input_size = 2048
+    data.main(data_args)
+
+    data_args.save_peaks = False
+    data_args.no_save = False
+    data_args.load_peaks = True
+    for input_size in tqdm(input_sizes):
+        data_args.input_size = input_size
+        data.main(data_args)
+        for name in ['train', 'trainlabel', 'test', 'testlabel']:
+            os.replace(f'{output_path}/{name}.hdf5', f'{args.all_input_path}/{name}{input_size}.hdf5')
+
+def main(args):
+    if args.run_data:
+        run_data(args)
     if args.no_run and args.record is not None:
         locate(args)
     if not args.no_run:
         test(args)
 
 parser = argparse.ArgumentParser(description='Predict with trained model.')
-parser.add_argument('--input_size', default=256)
-parser.add_argument('--dataset_path', default='../ecg-mit-bih/src/dataset')
+parser.add_argument('--all_input_path', default='misc',
+        help='where to save output files train|test[label]input_size.hdf5 (used for extraction and visualisation)')
+
 parser.add_argument('--working_dataset_path', default='dataset',
-        help='where to store peak data and config.hdf5')
+        help='where to store peak data and config.hdf5, these are new files added by this code')
+parser.add_argument('--misc_path', default='misc',
+        help='where to store other files added by this code')
+parser.add_argument('--physhik_path',
+        help='if set, overrides all paths below corresponding to files physhik implementation already downloads/generates')
+parser.add_argument('--dataset_path', default='dataset')
+parser.add_argument('--train_output_dataset_path', default='dataset',
+        help='where to save output files train|test[label].hdf5')
+parser.add_argument('--cinc_base_path', default='.',
+        help='where to save/load cinc training2017.zip and extract to /training2017')
+
+#parser.add_argument('--input_size', default=256)
+#parser.add_argument('--model_path', default='models/MLII-latest.hdf5')
 parser.add_argument('--lead', default='MLII')
-parser.add_argument('--model_path', default='models/MLII-latest.hdf5')
-parser.add_argument('--physhik_path', default='../ecg-mit-bih/src', help='Only necessary if model loading fails')
-parser.add_argument('--load_graph', default=False, action='store_true', help='Only necessary if model loading fails')
 parser.add_argument('--sample_rate', default=360, type=int, help='Sample rate in Hz.')
+
+parser.add_argument('--run_data', default=False, action='store_true', help='Run data.py for each sample size and store in dataset_path')
 
 parser.add_argument('--no_run', default=False, action='store_true')
 parser.add_argument('--stats', default=False, action='store_true')
@@ -117,10 +157,6 @@ parser.add_argument('--limit', default=None, type=int, help='Only show x mistake
 parser.add_argument('--record', default=None, type=int, help='Record to locate nearby peaks.')
 parser.add_argument('--sample', default=None, type=int, help='Sample number.')
 
-def main(arg_arr=[]):
-    args = parser.parse_args(arg_arr)
-    _main(args)
-
 if __name__ == '__main__':
     args = parser.parse_args()
-    _main(args)
+    main(args)
