@@ -83,23 +83,72 @@ class TqdmUpTo(tqdm):
             self.total = tsize
         return self.update(b * bsize - self.n)  # also sets self.n = b * bsize
 
+def download(args):
+    from csv import reader
+    from urllib.request import urlretrieve
+    from zipfile import ZipFile
+    # download mitdb
+    base_link = 'https://physionet.org/files/mitdb/1.0.0/'
+    recs = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 111, 112, 113, 114, 115, 116, 117, 118, 119, 121, 122, 123, 124,
+            200, 201, 202, 203, 205, 207, 208, 209, 210, 212, 213, 214, 215, 217, 219, 220, 221, 222, 223, 228, 230, 231, 232, 233, 234]
+    exts = ['atr', 'dat', 'hea']
+    rec_s = set(str(rec) for rec in recs)
+    os.makedirs(args.dataset_path, exist_ok=True)
+    mitdb_exists = True
+    for rec in recs:
+        for ext in exts:
+            if not os.path.isfile(f'{args.dataset_path}/{rec}.{ext}'):
+                mitdb_exists = False
+                break
+    def extract_mitdb():
+        name_base = 'mit-bih-arrhythmia-database-1.0.0/'
+        with ZipFile(zip_path, 'r') as zip_ref:
+            for info in zip_ref.infolist():
+                rec = info.filename[-7:-4]
+                ext = info.filename[-3:]
+                if rec in rec_s and ext in exts and info.filename == f'{name_base}{rec}.{ext}':
+                    info.filename = f'{rec}.{ext}'
+                    zip_ref.extract(info, args.dataset_path)
+    if not mitdb_exists:
+        os.makedirs(args.misc_path, exist_ok=True)
+        zip_path = f'{args.misc_path}/mit-bih-arrhythmia-database-1.0.0.zip'
+        try:
+            extract_mitdb()
+        except:
+            url = 'https://physionet.org/static/published-projects/mitdb/mit-bih-arrhythmia-database-1.0.0.zip'
+            with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1,
+                    desc='Downloading mitdb') as t:  # all optional kwargs
+                filename, _ = urlretrieve(url, zip_path, t.update_to)
+            extract_mitdb()
+
+    # download cinc
+    path = args.cinc_base_path
+    try:
+        list(reader(open(f'{path}/training2017/REFERENCE.csv')))
+        return
+    except:
+        pass # expected that file does not exist
+    zip_path = f'{path}/training2017.zip'
+    try: # extracting and see if it works
+        with ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall()
+        list(reader(open(f'{path}/training2017/REFERENCE.csv')))
+        return
+    except:
+        print(f'{zip_path} does not have the right format, redownloading')
+    url = 'https://archive.physionet.org/challenge/2017/training2017.zip'
+    with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1,
+            desc='Downloading training2017.zip') as t:  # all optional kwargs
+        filename, _ = urlretrieve(url, zip_path, t.update_to)
+    with ZipFile(filename, 'r') as zip_ref:
+        zip_ref.extractall()
+
 # adapted from https://github.com/physhik/ecg-mit-bih
 from scipy.signal import find_peaks
 from sklearn import preprocessing
 def get_noise(path, input_size, choose_size):
     from csv import reader
-    from urllib.request import urlretrieve
-    from zipfile import ZipFile
-    try:
-        labels = list(reader(open(f'{path}/training2017/REFERENCE.csv')))
-    except:
-        url = 'https://archive.physionet.org/challenge/2017/training2017.zip'
-        with TqdmUpTo(unit='B', unit_scale=True, unit_divisor=1024, miniters=1,
-                desc='Downloading training2017.zip') as t:  # all optional kwargs
-            filename, _ = urlretrieve(url, f'{path}/training2017.zip', t.update_to)
-        with ZipFile(filename, 'r') as zip_ref:
-            zip_ref.extractall()
-        labels = list(reader(open(f'{path}/training2017/REFERENCE.csv')))
+    labels = list(reader(open(f'{path}/training2017/REFERENCE.csv')))
     noises = {'trainset': [], 'testset': []}
     for i, label in enumerate(labels):
         if i > len(labels) / 6:
@@ -265,15 +314,22 @@ parser = argparse.ArgumentParser(description='Extract ECG data.')
 parser.add_argument('--input_size', default=256, type=int,
         help='number of samples input into model')
 parser.add_argument('--extract_size', type=int,
-        help='number of samples extracted from data, default input_size, (partially implemented, use input_size)')
-parser.add_argument('--dataset_path', default='../ecg-mit-bih/src/dataset')
+        help='number of samples extracted from data, default input_size, (partially implemented, just use input_size)')
+
 parser.add_argument('--working_dataset_path', default='dataset',
-        help='where to store peak data and config.hdf5')
+        help='where to store peak data and config.hdf5, these are new files added by this code')
+parser.add_argument('--misc_path', default='misc',
+        help='where to store other files added by this code')
+parser.add_argument('--physhik_path',
+        help='if set, overrides all paths below corresponding to files physhik implementation already downloads/generates')
+parser.add_argument('--dataset_path', default='dataset')
 parser.add_argument('--train_output_dataset_path', default='dataset',
         help='where to save output files train|test[label].hdf5 (used for training)')
-parser.add_argument('--cinc_base_path', default='../ecg-mit-bih/src',
+parser.add_argument('--cinc_base_path', default='.',
         help='where to save/load cinc training2017.zip and extract to /training2017')
 
+parser.add_argument('--download', default=False, action='store_true',
+        help='check if required datasets exist, if not download them')
 parser.add_argument('--save_physhik', default=False, action='store_true')
 parser.add_argument('--no_save', default=False, action='store_true',
         help='do not actually preprocess and save the data')
@@ -289,6 +345,13 @@ parser.add_argument('--print_rhythms', default=False, action='store_true',
 def main(args):
     if args.extract_size is None:
         args.extract_size = args.input_size
+    if args.physhik_path is not None:
+        args.dataset_path = args.physhik_path + '/dataset'
+        args.train_output_dataset_path = args.physhik_path + '/dataset'
+        args.cinc_base_path = args.physhik_path
+
+    if args.download:
+        download(args)
 
     if args.save_peaks:
         save_peaks(args)
